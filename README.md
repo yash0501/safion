@@ -2,6 +2,8 @@
 
 ## Short Description
 
+Safion is an innovative algorithmic stablecoin built on TON, designed to provide secure, efficient, and scalable stability in decentralized finance. Unlike traditional overcollateralized stablecoins, Safion maintains price stability without heavy collateral, unlocking liquidity and capital efficiency. Powered by TON’s fast and decentralized blockchain, Safion offers global, seamless transactions while ensuring trust and transparency through its advanced algorithmic approach. Safion redefines stability, empowering users with a dynamic, energy-efficient, and secure financial solution for the future of DeFi.
+
 ## Project Description
 
 Project Name: Safion

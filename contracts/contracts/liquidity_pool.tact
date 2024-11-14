@@ -373,3 +373,17 @@ contract AMM with Deployable {
         // TODO: implement fee adjustment
     }
 }
+
+// contract PositionManager with Deployable {
+//     positions: map<Address, LiquidityPosition>;
+
+//     init() {
+//         self.positions = emptyMap();
+//     }
+
+//     fun _generatePositionId(lowerPrice: Int, upperPrice: Int): String {
+//         return lowerPrice.toString() + "-" + upperPrice.toString();
+//     }
+// }
+
+// https://chatgpt.com/c/6717f1d7-58dc-8013-ba6e-ef33afb01441

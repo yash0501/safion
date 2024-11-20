@@ -1,21 +1,31 @@
 import "@stdlib/deploy";
 
+message TransferNotification {
+    query_id: Int as uint64;
+    jetton_amount: Int as uint128;
+    sender: Address;
+    payload: Slice;
+}
+
 struct LiquidityPosition {
     lowerPrice: Int as uint256;
     upperPrice: Int as uint256;
-    liquidity: Int as uint256;
+    liquidityX: Int as uint256;
+    liquidityY: Int as uint256;
     // feeEarnedX: Int as uint256;
     // feeEarnedY: Int as uint256;
     feeGrowthInsideXLast: Int as uint256;
     feeGrowthInsideYLast: Int as uint256;
     tokensOwedX: Int as uint256;
     tokensOwedY: Int as uint256;
+    partial: Bool = false;
 }
 
 struct LiquidityBin {
     lowerPrice: Int as uint256;
     upperPrice: Int as uint256;
-    liquidity: Int as uint256;
+    liquidityX: Int as uint256;
+    liquidityY: Int as uint256;
     positions: map<Address, LiquidityPosition>;
     feeGrowthGlobalX: Int as uint256;
     feeGrowthGlobalY: Int as uint256;
@@ -77,7 +87,8 @@ contract AMM with Deployable {
             let bin: LiquidityBin = LiquidityBin {
                 lowerPrice: binIndex * self.binWidth,
                 upperPrice: (binIndex + 1) * self.binWidth,
-                liquidity: 0,
+                liquidityX: 0,
+                liquidityY: 0,
                 positions: emptyMap(),
                 feeGrowthGlobalX: 0,
                 feeGrowthGlobalY: 0
@@ -88,12 +99,29 @@ contract AMM with Deployable {
         }
     }
 
+    receive(msg: TransferNotification) {
+        require(msg.jetton_amount > 0, "Amount must be greater than 0");
+
+        if (msg.sender == self.tokenX) {
+            self.tokenXReserve += msg.jetton_amount;
+        }
+        else if (msg.sender == self.tokenY) {
+            self.tokenYReserve += msg.jetton_amount;
+        }
+        else {
+            require(false, "Invalid token");
+        }
+
+        self.updatePrice();
+    }
+
     receive(msg: AddLiquidity) {
         require(msg.lowerPrice < msg.upperPrice, "Lower price must be less than upper price");
 
         let xUsed: Int = 0;
         let yUsed: Int = 0;
-        let liquidity: Int = 0;
+        let liquidityX: Int = 0;
+        let liquidityY: Int = 0;
 
         let currentPrice: Int = msg.lowerPrice;
         while (currentPrice < msg.upperPrice) {
@@ -105,30 +133,34 @@ contract AMM with Deployable {
             if (self.currentPrice < bin.lowerPrice) {
                 // only token X is used
                 dX = msg.amountX * (binUpperPrice - currentPrice) / (msg.upperPrice - msg.lowerPrice);
-                liquidity = dX;
+                liquidityX = dX;
                 xUsed += dX;
             }
             else if (self.currentPrice > bin.upperPrice) {
                 // only token Y is used
                 dY = msg.amountY * (binUpperPrice - currentPrice) / (msg.upperPrice - msg.lowerPrice);
-                liquidity = dY;
+                liquidityY = dY;
                 yUsed += dY;
             }
             else {
                 // both tokens are used
                 dX = msg.amountX * (binUpperPrice - currentPrice) / (msg.upperPrice - msg.lowerPrice);
                 dY = msg.amountY * (binUpperPrice - currentPrice) / (msg.upperPrice - msg.lowerPrice);
-                liquidity = min(dX, dY);
-                xUsed += liquidity;
-                yUsed += liquidity;
+                // liquidity = min(dX, dY);
+                liquidityX = dX;
+                liquidityY = dY;
+                xUsed += liquidityX;
+                yUsed += liquidityY;
             }
 
-            bin.liquidity += liquidity;
+            bin.liquidityX += liquidityX;
+            bin.liquidityY += liquidityY;
             if (bin.positions.get(sender()) == null) {
                 bin.positions.set(sender(), LiquidityPosition {
                     lowerPrice: bin.lowerPrice,
                     upperPrice: bin.upperPrice,
-                    liquidity: liquidity,
+                    liquidityX: liquidityX,
+                    liquidityY: liquidityY,
                     feeGrowthInsideXLast: bin.feeGrowthGlobalX,
                     feeGrowthInsideYLast: bin.feeGrowthGlobalY,
                     tokensOwedX: dX,
@@ -138,7 +170,8 @@ contract AMM with Deployable {
             else {
                 let position: LiquidityPosition = bin.positions.get(sender())!!;
                 self._updatePositionFee(position, bin);
-                position.liquidity += liquidity;
+                position.liquidityX += liquidityX;
+                position.liquidityY += liquidityY;
             }
 
             currentPrice = binUpperPrice;
@@ -170,23 +203,25 @@ contract AMM with Deployable {
             else{
                 let position: LiquidityPosition = bin.positions.get(sender())!!;
                 self._updatePositionFee(position, bin);
-                let liquidity: Int = position.liquidity;
-                let dLiquidity: Int = liquidity * msg.liquidityPercentage / 100;
+                let liquidityX: Int = position.liquidityX;
+                let liquidityY: Int = position.liquidityY;
+                let dLiquidityX: Int = liquidityX * msg.liquidityPercentage / 100;
+                let dLiquidityY: Int = liquidityY * msg.liquidityPercentage / 100;
 
                 if (self.currentPrice < bin.lowerPrice) {
                     // only token X is returned
-                    let dX: Int = dLiquidity;
+                    let dX: Int = dLiquidityX;
                     xReturned += dX;
                 }
                 else if (self.currentPrice > bin.upperPrice) {
                     // only token Y is returned
-                    let dY: Int = dLiquidity;
+                    let dY: Int = dLiquidityY;
                     yReturned += dY;
                 }
                 else {
                     // both tokens are returned
-                    let dX: Int = dLiquidity * (self.currentPrice - bin.lowerPrice) / self.currentPrice;
-                    let dY: Int = dLiquidity * (bin.upperPrice - self.currentPrice) / self.currentPrice;
+                    let dX: Int = dLiquidityX * (self.currentPrice - bin.lowerPrice) / self.currentPrice;
+                    let dY: Int = dLiquidityY * (bin.upperPrice - self.currentPrice) / self.currentPrice;
                     xReturned += dX;
                     yReturned += dY;
                 }
@@ -202,10 +237,12 @@ contract AMM with Deployable {
                 position.tokensOwedX -= position.tokensOwedX * msg.liquidityPercentage / 100;
                 position.tokensOwedY -= position.tokensOwedY * msg.liquidityPercentage / 100;
 
-                bin.liquidity -= dLiquidity;
-                position.liquidity -= dLiquidity;
+                bin.liquidityX -= dLiquidityX;
+                bin.liquidityY -= dLiquidityY;
+                position.liquidityX -= dLiquidityX;
+                position.liquidityY -= dLiquidityY;
 
-                if (position.liquidity == 0) {
+                if (position.liquidityX == 0 && position.liquidityY == 0) {
                     bin.positions.del(sender());
                 }
             }
@@ -254,10 +291,10 @@ contract AMM with Deployable {
 
         while (remainingX > 0 && currentPrice < maxPrice) {
             let bin: LiquidityBin = self.getOrCreateBin(currentPrice);
-            if (bin.liquidity > 0) {
-                let dX: Int = min(remainingX, bin.liquidity);
+            if (bin.liquidityY > 0) {
+                let dX: Int = min(remainingX, bin.liquidityX);
                 let dY: Int = dX * (bin.upperPrice - currentPrice) / currentPrice;
-                let dYAvailable: Int = bin.liquidity * currentPrice / (bin.upperPrice - bin.lowerPrice);
+                let dYAvailable: Int = bin.liquidityY * currentPrice / (bin.upperPrice - bin.lowerPrice);
 
                 if (dYAvailable >= dY) {
                     yOut += dY;
@@ -273,18 +310,18 @@ contract AMM with Deployable {
             currentPrice = bin.upperPrice;
         }
 
-        let totalLiquidity: Int = 0;
-        if (!activeBins.isEmpty()) {
-            foreach (key, value in activeBins) {
-                let bin: LiquidityBin = value;
-                totalLiquidity += bin.liquidity;
-            }
-            let feePerLiquidity = feeAmount / totalLiquidity;
-            foreach (key, value in activeBins) {
-                let bin: LiquidityBin = value;
-                bin.feeGrowthGlobalX += feePerLiquidity;
-            }
-        }
+        // let totalLiquidity: Int = 0;
+        // if (!activeBins.isEmpty()) {
+        //     foreach (key, value in activeBins) {
+        //         let bin: LiquidityBin = value;
+        //         totalLiquidity += bin.liquidity;
+        //     }
+        //     let feePerLiquidity = feeAmount / totalLiquidity;
+        //     foreach (key, value in activeBins) {
+        //         let bin: LiquidityBin = value;
+        //         bin.feeGrowthGlobalX += feePerLiquidity;
+        //     }
+        // }
 
         return yOut;
     }
@@ -299,8 +336,8 @@ contract AMM with Deployable {
 
         while (remainingY > 0 && currentPrice > maxPrice) {
             let bin: LiquidityBin = self.getOrCreateBin(currentPrice);
-            if (bin.liquidity > 0) {
-                let dY: Int = min(remainingY, bin.liquidity * currentPrice / (bin.upperPrice - bin.lowerPrice));
+            if (bin.liquidityX > 0) {
+                let dY: Int = min(remainingY, bin.liquidityY * currentPrice / (bin.upperPrice - bin.lowerPrice));
                 let dX: Int = dY * currentPrice / (bin.upperPrice - currentPrice);
 
                 xOut += dX;
@@ -312,18 +349,18 @@ contract AMM with Deployable {
             currentPrice = bin.upperPrice;
         }
 
-        let totalLiquidity: Int = 0;
-        if (!activeBins.isEmpty()) {
-            foreach (key, value in activeBins) {
-                let bin: LiquidityBin = value;
-                totalLiquidity += bin.liquidity;
-            }
-            let feePerLiquidity = feeAmount / totalLiquidity;
-            foreach (key, value in activeBins) {
-                let bin: LiquidityBin = value;
-                bin.feeGrowthGlobalY += feePerLiquidity;
-            }
-        }
+        // let totalLiquidity: Int = 0;
+        // if (!activeBins.isEmpty()) {
+        //     foreach (key, value in activeBins) {
+        //         let bin: LiquidityBin = value;
+        //         totalLiquidity += bin.liquidity;
+        //     }
+        //     let feePerLiquidity = feeAmount / totalLiquidity;
+        //     foreach (key, value in activeBins) {
+        //         let bin: LiquidityBin = value;
+        //         bin.feeGrowthGlobalY += feePerLiquidity;
+        //     }
+        // }
 
         return xOut;
     }
@@ -356,9 +393,9 @@ contract AMM with Deployable {
         let feeGrowthDeltaX: Int = bin.feeGrowthGlobalX - position.feeGrowthInsideXLast;
         let feeGrowthDeltaY: Int = bin.feeGrowthGlobalY - position.feeGrowthInsideYLast;
 
-        if (position.liquidity > 0) {
-            position.tokensOwedX += feeGrowthDeltaX * position.liquidity;
-            position.tokensOwedY += feeGrowthDeltaY * position.liquidity;
+        if (position.liquidityX > 0 || position.liquidityY > 0) {
+            position.tokensOwedX += feeGrowthDeltaX * position.liquidityX;
+            position.tokensOwedY += feeGrowthDeltaY * position.liquidityY;
         }
 
         position.feeGrowthInsideXLast = bin.feeGrowthGlobalX;

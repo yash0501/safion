@@ -13,6 +13,16 @@ message RemoveLiquidity {
     payload: Slice;
 }
 
+message(0xf8a7ea5) JettonTransfer {
+    queryId: Int as uint64;
+    amount: Int as coins;
+    destination: Address;
+    responseDestination: Address?;
+    customPayload: Cell? = null;
+    forwardTonAmount: Int as coins;
+    forwardPayload: Slice as remaining;
+}
+
 struct RemoveLiquidityPayload {
     percentage: Int as uint256;
 }
@@ -78,6 +88,13 @@ struct BinInfo {
     bin: LiquidityBin;
 }
 
+struct JettonWalletData {
+    balance: Int as coins;
+    ownerAddress: Address;
+    jettonMasterAddress: Address;
+    jettonWalletCode: Cell;
+}
+
 contract AMM with Deployable {
     currentPrice: Int as uint256;
     binWidth: Int as uint256;
@@ -89,6 +106,10 @@ contract AMM with Deployable {
     tokenX: Address;
     tokenY: Address;
     owner: Address;
+    tokenXDecimals: Int as uint256;
+    tokenYDecimals: Int as uint256;
+    tokenXWalletCode: Cell;
+    tokenYWalletCode: Cell;
     // globalFeeXAccumulator: Int as uint256;
     // globalFeeYAccumulator: Int as uint256;
 
@@ -101,6 +122,10 @@ contract AMM with Deployable {
         self.tokenX = address("EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N");
         self.tokenY = address("EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N");
         self.owner = sender();
+        self.tokenXDecimals = 18;
+        self.tokenYDecimals = 18;
+        self.tokenXWalletCode = emptyCell();
+        self.tokenYWalletCode = emptyCell();
     }
 
     // Receiver for TransferNotification messages
@@ -109,6 +134,10 @@ contract AMM with Deployable {
 
         // Extract and handle the operation (op) from the payload
         let payload: TransferNotificationPayload = TransferNotificationPayload.fromSlice(msg.payload);
+
+        // Validate the deadline
+        require(payload.deadline > now(), "Deadline has passed");
+
         if (payload.op == 0) {
             // Swap operation
             let swapData: SwapPayload = SwapPayload.fromSlice(payload.additional_data);
@@ -133,182 +162,6 @@ contract AMM with Deployable {
 
         let pos: LiquidityPosition = position!!;
         self.removeLiquidity(msg, pos, payload);
-    }
-
-    fun removeLiquidity(msg: RemoveLiquidity, position: LiquidityPosition, payload: RemoveLiquidityPayload) {
-        let priceGlobal: Int = self.getCurrentPrice();
-        let totalXRemoved: Int = 0;
-        let totalYRemoved: Int = 0;
-        let totalFeeWithdrawn: Int = 0;
-
-        foreach (key, value in position.liquidityInfo) {
-            let bin: LiquidityBin = self.bins.get(key)!!;
-            let liquidityInBin: LiquidityInBins = value;
-
-            let liquidity: Int = liquidityInBin.liquidity;
-            let feePerLiquidity: Int = bin.feePerLiquidity;
-            let binLowerPrice: Int = bin.lowerPrice;
-            let binUpperPrice: Int = bin.upperPrice;
-
-            let sqrtBinLowerPrice = self.getSqrt(binLowerPrice);
-            let sqrtBinUpperPrice = self.getSqrt(binUpperPrice);
-            let sqrtGlobalPrice = self.getSqrt(priceGlobal);
-
-            let liquidityToRemove: Int = liquidity * payload.percentage / 100;
-            let feeCheckpoint: Int = liquidityInBin.feeCheckpoint;
-
-            let xRemoved = 0;
-            let yRemoved = 0;
-
-            if (liquidityToRemove > 0) {
-                if (priceGlobal < binLowerPrice) {
-                    // only token X is used
-                    xRemoved = liquidityToRemove * (sqrtBinUpperPrice - sqrtBinLowerPrice);
-                    yRemoved = 0;
-                } else if (priceGlobal > binUpperPrice) {
-                    // only token Y is used
-                    xRemoved = 0;
-                    yRemoved = liquidityToRemove * (sqrtBinUpperPrice - sqrtBinLowerPrice);
-                } else {
-                    // both tokens are used
-                    xRemoved = liquidityToRemove * (sqrtBinUpperPrice - sqrtGlobalPrice);
-                    yRemoved = liquidityToRemove * (sqrtGlobalPrice - sqrtBinLowerPrice);
-                }
-
-                let feeWithdrawn: Int = liquidityToRemove * (feePerLiquidity - feeCheckpoint);
-                totalXRemoved += xRemoved;
-                totalYRemoved += yRemoved;
-                totalFeeWithdrawn += feeWithdrawn;
-            }
-        }
-
-        self.tokenXReserve -= totalXRemoved;
-        self.tokenYReserve -= totalYRemoved;
-
-        // send the removed tokens to the receiver
-        // sendTokens(msg.sender, totalXRemoved);
-        // sendTokens(msg.sender, totalYRemoved);
-    }
-
-    fun swap(msg: TransferNotification, payload: TransferNotificationPayload, swapData: SwapPayload) {
-        // check which token is being swapped
-        let tokenWallet: Address = payload.token_wallet;
-        let isX: Bool = false;
-
-        if tokenWallet == self.tokenX {
-            isX = true;
-        } else if tokenWallet == self.tokenY {
-            isX = false;
-        } else {
-            require(false, "Invalid token wallet address");
-        }
-
-        if (isX) {
-            // swap x for y
-            self.swapXForY(msg.jetton_amount, swapData);
-        }
-        else {
-            // swap y for x
-            self.swapYForX(msg.jetton_amount, swapData);
-        }
-    }
-
-    fun swapXForY(swapAmount: Int, swapData: SwapPayload) {
-        let remainingAmount: Int = swapAmount;
-        let priceGlobal: Int = self.getCurrentPrice();
-        let totaldX: Int = 0;
-        let totaldY: Int = 0;
-
-        let done: Bool = false;
-
-        while (remainingAmount > 0 && !done) {
-            let binInfo: BinInfo = self.getOrCreateBin(priceGlobal);
-            let bin: LiquidityBin = binInfo.bin;
-            
-            let effectiveSwap: Int = remainingAmount * (1000000 - self.fee) / 1000000;
-
-            let deltaPrice: Int = effectiveSwap / bin.liquidity;
-            let pNew = min(priceGlobal + deltaPrice, bin.upperPrice);
-
-            let sqrtPNew = self.getSqrt(pNew);
-            let sqrtPriceGlobal = self.getSqrt(priceGlobal);
-
-            let dY = bin.liquidity * ((1/sqrtPNew) - (1/sqrtPriceGlobal));
-            // let dX = bin.liquidity * (sqrtPNew - sqrtPriceGlobal);
-            let dX = effectiveSwap;
-
-            totaldX += dX;
-            totaldY += dY;
-
-            remainingAmount -= (dX * 1000000) / (1000000 - self.fee);
-            priceGlobal = pNew;
-
-            if (remainingAmount <= 0) {
-                done = true;
-            }
-            else{
-                done = false;
-            }
-        }
-
-        self.tokenXReserve += totaldX;
-        self.tokenYReserve -= totaldY;
-
-        // update the global fee accumulator
-        // self.globalFeeXAccumulator += totaldX * self.fee;
-        // self.globalFeeYAccumulator += totaldY * self.fee;
-
-        // send the swapped tokens to the receiver
-        // sendTokens(swapData.receiver_address, totaldY);
-    }
-
-    fun swapYForX (swapAmount: Int, swapData: SwapPayload) {
-        let remainingAmount: Int = swapAmount;
-        let priceGlobal: Int = self.getCurrentPrice();
-        let totaldX: Int = 0;
-        let totaldY: Int = 0;
-
-        let done: Bool = false;
-
-        while (remainingAmount > 0 && !done) {
-            let binInfo: BinInfo = self.getOrCreateBin(priceGlobal);
-            let bin: LiquidityBin = binInfo.bin;
-            
-            let effectiveSwap: Int = remainingAmount * (1000000 - self.fee) / 1000000;
-
-            let deltaPrice: Int = effectiveSwap / bin.liquidity;
-            let pNew = max(priceGlobal - deltaPrice, bin.lowerPrice);
-
-            let sqrtPNew = self.getSqrt(pNew);
-            let sqrtPriceGlobal = self.getSqrt(priceGlobal);
-
-            let dX = bin.liquidity * (sqrtPriceGlobal - sqrtPNew);
-            // let dY = bin.liquidity * (priceGlobal - pNew);
-            let dY = effectiveSwap;
-
-            totaldX += dX;
-            totaldY += dY;
-
-            remainingAmount -= (dY * 1000000) / (1000000 - self.fee);
-            priceGlobal = pNew;
-
-            if (remainingAmount <= 0) {
-                done = true;
-            }
-            else{
-                done = false;
-            }
-        }
-
-        self.tokenXReserve -= totaldX;
-        self.tokenYReserve += totaldY;
-
-        // update the global fee accumulator
-        // self.globalFeeXAccumulator += totaldX * self.fee;
-        // self.globalFeeYAccumulator += totaldY * self.fee;
-
-        // send the swapped tokens to the receiver
-        // sendTokens(swapData.receiver_address, totaldX);
     }
 
     fun provideLiquidity(msg: TransferNotification, payload: TransferNotificationPayload, provideLpData: ProvideLPPayload) {
@@ -392,23 +245,21 @@ contract AMM with Deployable {
     fun addLiquidityToBins(position: LiquidityPosition) {
         let xUsed: Int = 0;
         let yUsed: Int = 0;
-        let liquidityX: Int = 0;
-        let liquidityY: Int = 0;
         let xRemaining = position.tokensOwedX;
         let yRemaining = position.tokensOwedY;
 
         let globalPrice = self.getCurrentPrice();
 
         let currentPrice: Int = position.lowerPrice;
-        while (currentPrice < position.upperPrice) {
+        while (currentPrice < position.upperPrice && (xRemaining > 0 || yRemaining > 0)) {
             let binInfo: BinInfo = self.getOrCreateBin(currentPrice);
             let bin: LiquidityBin = binInfo.bin;
-            let binUpperPrice: Int = bin.upperPrice;
-            let binLowerPrice: Int = bin.lowerPrice;
+            // let binUpperPrice: Int = bin.upperPrice;
+            // let binLowerPrice: Int = bin.lowerPrice;
             let dX: Int = 0;
             let dY: Int = 0;
-            let sqrtPriceUpper = self.getSqrt(binUpperPrice);
-            let sqrtPriceLower = self.getSqrt(binLowerPrice);
+            let sqrtPriceUpper = self.getSqrt(bin.upperPrice);
+            let sqrtPriceLower = self.getSqrt(bin.lowerPrice);
             let sqrtGlobalPrice = self.getSqrt(globalPrice);
 
 
@@ -431,17 +282,18 @@ contract AMM with Deployable {
                 maxLiquidtyX = xRemaining / yRemaining;
             }
             else{
-                maxLiquidtyX = pow2(256) - 1;
+                maxLiquidtyX = pow2(128) - 1;
             }
 
             if (dY > 0){
                 maxLiquidtyY = yRemaining / xRemaining;
             }
             else{
-                maxLiquidtyY = pow2(256) - 1;
+                maxLiquidtyY = pow2(128) - 1;
             }
 
             let liquidityInBin = min(maxLiquidtyX, maxLiquidtyY);
+            bin.liquidity += liquidityInBin;
             xUsed = dX * liquidityInBin;
             yUsed = dY * liquidityInBin;
 
@@ -450,10 +302,190 @@ contract AMM with Deployable {
                 liquidity: liquidityInBin,
                 feeCheckpoint: bin.feePerLiquidity
             });
+
+            xRemaining -= xUsed;
+            yRemaining -= yUsed;
+            currentPrice = bin.upperPrice;
         }
 
         self.tokenXReserve += xUsed;
         self.tokenYReserve += yUsed;
+    }
+
+    fun removeLiquidity(msg: RemoveLiquidity, position: LiquidityPosition, payload: RemoveLiquidityPayload) {
+        let priceGlobal: Int = self.getCurrentPrice();
+        let totalXRemoved: Int = 0;
+        let totalYRemoved: Int = 0;
+        let totalFeeWithdrawn: Int = 0;
+
+        foreach (key, value in position.liquidityInfo) {
+            let bin: LiquidityBin = self.bins.get(key)!!;
+            let liquidityInBin: LiquidityInBins = value;
+
+            let liquidity: Int = liquidityInBin.liquidity;
+            let feePerLiquidity: Int = bin.feePerLiquidity;
+            let binLowerPrice: Int = bin.lowerPrice;
+            let binUpperPrice: Int = bin.upperPrice;
+
+            let sqrtBinLowerPrice = self.getSqrt(binLowerPrice);
+            let sqrtBinUpperPrice = self.getSqrt(binUpperPrice);
+            let sqrtGlobalPrice = self.getSqrt(priceGlobal);
+
+            let liquidityToRemove: Int = liquidity * payload.percentage / 100;
+            let feeCheckpoint: Int = liquidityInBin.feeCheckpoint;
+
+            let xRemoved = 0;
+            let yRemoved = 0;
+
+            if (liquidityToRemove > 0) {
+                if (priceGlobal < binLowerPrice) {
+                    // only token X is used
+                    xRemoved = liquidityToRemove * (sqrtBinUpperPrice - sqrtBinLowerPrice);
+                    yRemoved = 0;
+                } else if (priceGlobal > binUpperPrice) {
+                    // only token Y is used
+                    xRemoved = 0;
+                    yRemoved = liquidityToRemove * (sqrtBinUpperPrice - sqrtBinLowerPrice);
+                } else {
+                    // both tokens are used
+                    xRemoved = liquidityToRemove * (sqrtBinUpperPrice - sqrtGlobalPrice);
+                    yRemoved = liquidityToRemove * (sqrtGlobalPrice - sqrtBinLowerPrice);
+                }
+
+                let feeWithdrawn: Int = liquidityToRemove * (feePerLiquidity - feeCheckpoint);
+                totalXRemoved += xRemoved;
+                totalYRemoved += yRemoved;
+                totalFeeWithdrawn += feeWithdrawn;
+            }
+        }
+
+        self.tokenXReserve -= totalXRemoved;
+        self.tokenYReserve -= totalYRemoved;
+
+        // send the removed tokens to the receiver
+        self.sendTokens(msg.sender, totalXRemoved, self.tokenX, self.tokenXWalletCode);
+        self.sendTokens(msg.sender, totalYRemoved, self.tokenY, self.tokenYWalletCode);
+    }
+
+    fun swap(msg: TransferNotification, payload: TransferNotificationPayload, swapData: SwapPayload) {
+        // check which token is being swapped
+        let tokenWallet: Address = payload.token_wallet;
+        let isX: Bool = false;
+
+        if tokenWallet == self.tokenX {
+            isX = true;
+        } else if tokenWallet == self.tokenY {
+            isX = false;
+        } else {
+            require(false, "Invalid token wallet address");
+        }
+
+        if (isX) {
+            // swap x for y
+            self.swapXForY(msg.jetton_amount, swapData);
+        }
+        else {
+            // swap y for x
+            self.swapYForX(msg.jetton_amount, swapData);
+        }
+    }
+
+    fun swapXForY(swapAmount: Int, swapData: SwapPayload) {
+        let remainingAmount: Int = swapAmount;
+        let priceGlobal: Int = self.getCurrentPrice();
+        let totaldX: Int = 0;
+        let totaldY: Int = 0;
+
+        let done: Bool = false;
+
+        while (remainingAmount > 0 && !done) {
+            let binInfo: BinInfo = self.getOrCreateBin(priceGlobal);
+            let bin: LiquidityBin = binInfo.bin;
+            
+            let effectiveSwap: Int = remainingAmount * (1000000 - self.fee) / 1000000;
+
+            let deltaPrice: Int = effectiveSwap / bin.liquidity;
+            let pNew = min(priceGlobal + deltaPrice, bin.upperPrice);
+
+            let sqrtPNew = self.getSqrt(pNew);
+            let sqrtPriceGlobal = self.getSqrt(priceGlobal);
+
+            let dY = bin.liquidity * ((1/sqrtPNew) - (1/sqrtPriceGlobal));
+            // let dX = bin.liquidity * (sqrtPNew - sqrtPriceGlobal);
+            let dX = effectiveSwap;
+
+            totaldX += dX;
+            totaldY += dY;
+
+            remainingAmount -= (dX * 1000000) / (1000000 - self.fee);
+            priceGlobal = pNew;
+
+            if (remainingAmount <= 0 || priceGlobal < bin.upperPrice) {
+                done = true;
+            }
+            else{
+                done = false;
+            }
+
+            bin.feePerLiquidity += self.fee;
+        }
+
+        self.tokenXReserve += totaldX;
+        self.tokenYReserve -= totaldY;
+
+        // update the global fee accumulator
+        // self.globalFeeXAccumulator += totaldX * self.fee;
+        // self.globalFeeYAccumulator += totaldY * self.fee;
+
+        // send the swapped tokens to the receiver
+        self.sendTokens(swapData.receiver_address, totaldX, self.tokenX, self.tokenXWalletCode);
+    }
+
+    fun swapYForX (swapAmount: Int, swapData: SwapPayload) {
+        let remainingAmount: Int = swapAmount;
+        let priceGlobal: Int = self.getCurrentPrice();
+        let totaldX: Int = 0;
+        let totaldY: Int = 0;
+
+        let done: Bool = false;
+
+        while (remainingAmount > 0 && !done) {
+            let binInfo: BinInfo = self.getOrCreateBin(priceGlobal);
+            let bin: LiquidityBin = binInfo.bin;
+            
+            let effectiveSwap: Int = remainingAmount * (1000000 - self.fee) / 1000000;
+
+            let deltaPrice: Int = effectiveSwap / bin.liquidity;
+            let pNew = max(priceGlobal - deltaPrice, bin.lowerPrice);
+
+            let sqrtPNew = self.getSqrt(pNew);
+            let sqrtPriceGlobal = self.getSqrt(priceGlobal);
+
+            let dX = bin.liquidity * (sqrtPriceGlobal - sqrtPNew);
+            // let dY = bin.liquidity * (priceGlobal - pNew);
+            let dY = effectiveSwap;
+
+            totaldX += dX;
+            totaldY += dY;
+
+            remainingAmount -= (dY * 1000000) / (1000000 - self.fee);
+            priceGlobal = pNew;
+
+            if (remainingAmount <= 0 || priceGlobal > bin.lowerPrice) {
+                done = true;
+            }
+            else{
+                done = false;
+            }
+
+            bin.feePerLiquidity += self.fee;
+        }
+
+        self.tokenXReserve -= totaldX;
+        self.tokenYReserve += totaldY;
+
+        // send the swapped tokens to the receiver
+        self.sendTokens(swapData.receiver_address, totaldY, self.tokenY, self.tokenYWalletCode);
     }
 
     fun getOrCreateBin(price: Int): BinInfo {
@@ -486,39 +518,73 @@ contract AMM with Deployable {
     }
 
     fun getCurrentPrice(): Int {
+        let SCALE_FACTOR = 1_000_000_000_000_000_000; // 10^18 for fixed-point arithmetic
         let x = self.tokenXReserve;
         let y = self.tokenYReserve;
-        let p = 0;
-        if (x > 0 && y > 0) {
-            p = y / x;
+        if (x == 0 || y == 0) {
+            return 0;
         }
+        let scaledY = y * SCALE_FACTOR;
+        require(scaledY / SCALE_FACTOR == y, "Overflow");
+        let p = 0;
+        p = scaledY / x;
         return p;
     }
 
     fun getSqrt(x: Int): Int {
-        if (x < 0) {
-            require(false, "Negative input");
-        }
-        else if (x ==0 || x == 1) {
+        require(x >= 0, "Negative number");
+
+        if (x ==0 || x == 1) {
             return x;
         }
 
-        let start: Int = 1;
-        let end: Int = x;
-        let ans: Int = 0;
+        let approx = x;
+        let betterApprox = (approx + x / approx) / 2; // Newton's method
 
-        while (start <= end) {
-            let mid: Int = (start + end) / 2;
-            let midSqr: Int = mid * mid;
-
-            if (midSqr == x) {
-                ans = mid;
-                start = mid + 1;
-            } else {
-                end = mid - 1;
-            }
+        while (betterApprox < approx) {
+            approx = betterApprox;
+            betterApprox = (approx + x / approx) / 2;
         }
-        return 0
+
+        return approx;
+    }
+
+    fun sendTokens(receiver: Address, amount: Int, jettonMaster: Address, tokenWalletCode: Cell) {
+        require(amount > 0, "Amount must be greater than zero");
+        // send tokens to the receiver
+        let receiverWallet = self.calculateJettonWalletAddress(receiver, jettonMaster, tokenWalletCode);
+
+        send(SendParameters{
+            to: receiverWallet,
+            value: ton("0.05"),
+            body: JettonTransfer{
+                queryId: 0,
+                amount: amount,
+                destination: receiver,
+                responseDestination: null,
+                forwardTonAmount: 0,
+                forwardPayload: rawSlice("F")
+            }.toCell()
+        })
+    }
+
+    fun calculateJettonWalletAddress(
+        ownerAddress: Address,
+        jettonMasterAddress: Address,
+        jettonWalletCode: Cell,
+    ): Address {
+
+        let initData = JettonWalletData{
+            balance: 0,
+            ownerAddress,
+            jettonMasterAddress,
+            jettonWalletCode,
+        };
+
+        return contractAddress(StateInit{
+            code: jettonWalletCode,
+            data: initData.toCell(),
+        });
     }
 }
 

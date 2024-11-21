@@ -1,1 +1,1 @@
-export * from '../build/LiquidityPool2/tact_LiquidityPool2';
+export * from '../build/LiquidityPool2/tact_AMM';

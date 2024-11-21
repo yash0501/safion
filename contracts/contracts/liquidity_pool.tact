@@ -7,15 +7,60 @@ message TransferNotification {
     payload: Slice;
 }
 
+message RemoveLiquidity {
+    query_id: Int as uint64;
+    sender: Address;
+    payload: Slice;
+}
+
+struct RemoveLiquidityPayload {
+    percentage: Int as uint256;
+}
+
+struct TransferNotificationPayload {
+    op: Int as uint32;             // Operation code (e.g., swap, provide_lp)
+    token_wallet: Address;         // Address of the other Router token wallet
+    refund_address: Address;       // Address for refund if operation fails
+    excesses_address: Address;     // Address for TON excesses
+    deadline: Int as uint64;       // Execution deadline for the transaction
+    additional_data: Slice;        // Additional operation-specific data
+}
+
+struct ProvideLPPayload {
+    min_out: Int;                 // Minimum required tokens to receive
+    receiver_address: Address;    // Address where tokens will be sent
+    fwd_gas: Int;                 // Forward gas
+    custom_payload: Cell?;        // Optional custom payload
+    refund_fwd_gas: Int;          // Gas for forwarding on refund
+    refund_payload: Cell?;        // Optional refund payload
+    ref_fee: Int as uint16;       // Referral fee
+    referral_address: Address;    // Referral address
+    lower_price: Int as uint256;  // Lower price
+    upper_price: Int as uint256;  // Upper price
+}
+
+struct SwapPayload {
+    min_out: Int;                 // Minimum required tokens to receive
+    receiver_address: Address;    // Address where tokens will be sent
+    fwd_gas: Int;                 // Forward gas
+    custom_payload: Cell?;        // Optional custom payload
+    refund_fwd_gas: Int;          // Gas for forwarding on refund
+    refund_payload: Cell?;        // Optional refund payload
+    ref_fee: Int as uint16;       // Referral fee
+    referral_address: Address;    // Referral address
+}
+
+struct LiquidityInBins {
+    binId: Int as uint256;
+    liquidity: Int as uint256;
+    feeCheckpoint: Int as uint256;
+}
+
 struct LiquidityPosition {
     lowerPrice: Int as uint256;
     upperPrice: Int as uint256;
-    liquidityX: Int as uint256;
-    liquidityY: Int as uint256;
-    // feeEarnedX: Int as uint256;
-    // feeEarnedY: Int as uint256;
-    feeGrowthInsideXLast: Int as uint256;
-    feeGrowthInsideYLast: Int as uint256;
+    liquidity: Int as uint256;
+    liquidityInfo: map<Int, LiquidityInBins>;
     tokensOwedX: Int as uint256;
     tokensOwedY: Int as uint256;
     partial: Bool = false;
@@ -24,43 +69,28 @@ struct LiquidityPosition {
 struct LiquidityBin {
     lowerPrice: Int as uint256;
     upperPrice: Int as uint256;
-    liquidityX: Int as uint256;
-    liquidityY: Int as uint256;
-    positions: map<Address, LiquidityPosition>;
-    feeGrowthGlobalX: Int as uint256;
-    feeGrowthGlobalY: Int as uint256;
+    liquidity: Int as uint256;
+    feePerLiquidity: Int as uint256;
 }
 
-message AddLiquidity {
-    amountX: Int as uint256;
-    amountY: Int as uint256;
-    lowerPrice: Int as uint256;
-    upperPrice: Int as uint256;
-}
-
-message RemoveLiquidity {
-    lowerPrice: Int as uint256;
-    upperPrice: Int as uint256;
-    liquidityPercentage: Int as uint256;
-}
-
-message Swap {
-    tokenIn: Address;
-    amountIn: Int as uint256;
+struct BinInfo {
+    binIndex: Int as uint256;
+    bin: LiquidityBin;
 }
 
 contract AMM with Deployable {
     currentPrice: Int as uint256;
     binWidth: Int as uint256;
     bins: map<Int, LiquidityBin>;
+    positions: map<Address, LiquidityPosition>;
     fee: Int as uint256;
     tokenXReserve: Int as uint256;
     tokenYReserve: Int as uint256;
     tokenX: Address;
     tokenY: Address;
     owner: Address;
-    globalFeeXAccumulator: Int as uint256;
-    globalFeeYAccumulator: Int as uint256;
+    // globalFeeXAccumulator: Int as uint256;
+    // globalFeeYAccumulator: Int as uint256;
 
     init() {
         self.currentPrice = 0;
@@ -71,356 +101,428 @@ contract AMM with Deployable {
         self.tokenX = address("EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N");
         self.tokenY = address("EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N");
         self.owner = sender();
-        self.globalFeeXAccumulator = 0;
-        self.globalFeeYAccumulator = 0;
     }
 
-    fun getOrCreateBin(price: Int): LiquidityBin {
-        let binIndex: Int = price / self.binWidth;
-        let bin1: LiquidityBin? = self.bins.get(binIndex);
-
-        if bin1 != null {
-            let bin: LiquidityBin = bin1!!;
-            return bin;
-        }
-        else{
-            let bin: LiquidityBin = LiquidityBin {
-                lowerPrice: binIndex * self.binWidth,
-                upperPrice: (binIndex + 1) * self.binWidth,
-                liquidityX: 0,
-                liquidityY: 0,
-                positions: emptyMap(),
-                feeGrowthGlobalX: 0,
-                feeGrowthGlobalY: 0
-            };
-
-            self.bins.set(binIndex, bin);
-            return bin;
-        }
-    }
-
+    // Receiver for TransferNotification messages
     receive(msg: TransferNotification) {
-        require(msg.jetton_amount > 0, "Amount must be greater than 0");
+        require(msg.jetton_amount > 0, "Transferred amount must be greater than zero");
 
-        if (msg.sender == self.tokenX) {
-            self.tokenXReserve += msg.jetton_amount;
-        }
-        else if (msg.sender == self.tokenY) {
-            self.tokenYReserve += msg.jetton_amount;
-        }
-        else {
-            require(false, "Invalid token");
-        }
+        // Extract and handle the operation (op) from the payload
+        let payload: TransferNotificationPayload = TransferNotificationPayload.fromSlice(msg.payload);
 
-        self.updatePrice();
+        // Validate the deadline
+        require(payload.deadline > now(), "Deadline has passed");
+
+        if (payload.op == 0) {
+            // Swap operation
+            let swapData: SwapPayload = SwapPayload.fromSlice(payload.additional_data);
+            self.swap(msg, payload, swapData);
+        } else if (payload.op == 1) {
+            let provideLpData: ProvideLPPayload = ProvideLPPayload.fromSlice(payload.additional_data);
+            // Provide LP operation
+            self.provideLiquidity(msg, payload, provideLpData);
+        } else {
+            // Invalid operation
+            require(false, "Invalid token wallet address");
+        }
     }
 
-    receive(msg: AddLiquidity) {
-        require(msg.lowerPrice < msg.upperPrice, "Lower price must be less than upper price");
+    receive(msg: RemoveLiquidity) {
+        // Remove liquidity
+        // check if the sender has deposited liquidity previously or not
+        let position: LiquidityPosition? = self.positions.get(sender());
+        require(position != null, "No liquidity deposited previously");
 
+        let payload: RemoveLiquidityPayload = RemoveLiquidityPayload.fromSlice(msg.payload);
+
+        let pos: LiquidityPosition = position!!;
+        self.removeLiquidity(msg, pos, payload);
+    }
+
+    fun provideLiquidity(msg: TransferNotification, payload: TransferNotificationPayload, provideLpData: ProvideLPPayload) {
+        // first check if the user has deposited any token earlier or not
+        require(msg.jetton_amount > 0, "Transferred amount must be greater than zero");
+        require(provideLpData.lower_price < provideLpData.upper_price, "Lower price must be less than upper price");
+
+        let position: LiquidityPosition? = self.positions.get(sender());
+        if position == null {
+            // if not, create a new position
+            // token_wallet: Address;   // Address of the token wallet
+            // check if token_wallet is tokenX or tokenY
+            let tokenWallet: Address = payload.token_wallet;
+            let isX: Bool = false;
+
+            if tokenWallet == self.tokenX {
+                isX = true;
+            } else if tokenWallet == self.tokenY {
+                isX = false;
+            } else {
+                require(false, "Invalid token wallet address");
+            }            
+
+            position = LiquidityPosition {
+                lowerPrice: provideLpData.lower_price,
+                upperPrice: provideLpData.upper_price,
+                liquidity: 0,
+                // liquidityX: isX ? msg.jetton_amount : 0,
+                // liquidityY: isX ? 0 : msg.jetton_amount,
+                liquidityInfo: emptyMap(),
+                // feeGrowthInsideXLast: 0,
+                // feeGrowthInsideYLast: 0,
+                tokensOwedX: isX ? msg.jetton_amount : 0,
+                tokensOwedY: isX ? 0 : msg.jetton_amount,
+                partial: true
+            }
+        } else {
+            let tokenWallet: Address = payload.token_wallet;
+            let isX: Bool = false;
+
+            if tokenWallet == self.tokenX {
+                isX = true;
+            } else if tokenWallet == self.tokenY {
+                isX = false;
+            } else {
+                require(false, "Invalid token wallet address");
+            }    
+
+            let pos: LiquidityPosition = position!!;
+            if (isX && pos.tokensOwedX > 0) {
+                // user sent tokenX again
+                pos.tokensOwedX += msg.jetton_amount;
+            } else if (!isX && pos.tokensOwedY > 0) {
+                // user sent tokenY again
+                pos.tokensOwedY += msg.jetton_amount;
+            } else if (isX && pos.tokensOwedY > 0) {
+                // user sent tokenX after sending tokenY
+                // calculate the amount of tokenY to be converted to tokenX
+
+                pos.lowerPrice = provideLpData.lower_price;
+                pos.upperPrice = provideLpData.upper_price;
+                pos.tokensOwedX = msg.jetton_amount;
+                pos.partial = false;
+            } else if (!isX && pos.tokensOwedX > 0) {
+                // user sent tokenY after sending tokenX
+                // calculate the amount of tokenX to be converted to tokenY
+                
+                pos.lowerPrice = provideLpData.lower_price;
+                pos.upperPrice = provideLpData.upper_price;
+                pos.tokensOwedY = msg.jetton_amount;
+                pos.partial = false;
+            }
+
+            if pos.partial == false {
+                // add liquidity to bins
+                self.addLiquidityToBins(pos);
+            }
+        }
+    }
+
+    fun addLiquidityToBins(position: LiquidityPosition) {
         let xUsed: Int = 0;
         let yUsed: Int = 0;
-        let liquidityX: Int = 0;
-        let liquidityY: Int = 0;
+        let xRemaining = position.tokensOwedX;
+        let yRemaining = position.tokensOwedY;
 
-        let currentPrice: Int = msg.lowerPrice;
-        while (currentPrice < msg.upperPrice) {
-            let bin: LiquidityBin = self.getOrCreateBin(currentPrice);
-            let binUpperPrice: Int = min(bin.upperPrice, msg.upperPrice);
+        let globalPrice = self.getCurrentPrice();
+
+        let currentPrice: Int = position.lowerPrice;
+        while (currentPrice < position.upperPrice && (xRemaining > 0 || yRemaining > 0)) {
+            let binInfo: BinInfo = self.getOrCreateBin(currentPrice);
+            let bin: LiquidityBin = binInfo.bin;
+            // let binUpperPrice: Int = bin.upperPrice;
+            // let binLowerPrice: Int = bin.lowerPrice;
             let dX: Int = 0;
             let dY: Int = 0;
+            let sqrtPriceUpper = self.getSqrt(bin.upperPrice);
+            let sqrtPriceLower = self.getSqrt(bin.lowerPrice);
+            let sqrtGlobalPrice = self.getSqrt(globalPrice);
 
-            if (self.currentPrice < bin.lowerPrice) {
+
+            if (globalPrice < bin.lowerPrice) {
                 // only token X is used
-                dX = msg.amountX * (binUpperPrice - currentPrice) / (msg.upperPrice - msg.lowerPrice);
-                liquidityX = dX;
-                xUsed += dX;
-            }
-            else if (self.currentPrice > bin.upperPrice) {
+                dX = sqrtPriceUpper - sqrtPriceLower;
+            } else if (self.currentPrice > bin.upperPrice) {
                 // only token Y is used
-                dY = msg.amountY * (binUpperPrice - currentPrice) / (msg.upperPrice - msg.lowerPrice);
-                liquidityY = dY;
-                yUsed += dY;
-            }
-            else {
+                dY = sqrtPriceUpper - sqrtPriceLower;
+            } else {
                 // both tokens are used
-                dX = msg.amountX * (binUpperPrice - currentPrice) / (msg.upperPrice - msg.lowerPrice);
-                dY = msg.amountY * (binUpperPrice - currentPrice) / (msg.upperPrice - msg.lowerPrice);
-                // liquidity = min(dX, dY);
-                liquidityX = dX;
-                liquidityY = dY;
-                xUsed += liquidityX;
-                yUsed += liquidityY;
+                dX = sqrtPriceUpper - sqrtGlobalPrice;
+                dY = sqrtGlobalPrice - sqrtPriceLower;
             }
 
-            bin.liquidityX += liquidityX;
-            bin.liquidityY += liquidityY;
-            if (bin.positions.get(sender()) == null) {
-                bin.positions.set(sender(), LiquidityPosition {
-                    lowerPrice: bin.lowerPrice,
-                    upperPrice: bin.upperPrice,
-                    liquidityX: liquidityX,
-                    liquidityY: liquidityY,
-                    feeGrowthInsideXLast: bin.feeGrowthGlobalX,
-                    feeGrowthInsideYLast: bin.feeGrowthGlobalY,
-                    tokensOwedX: dX,
-                    tokensOwedY: dY
-                });
+            let maxLiquidtyX: Int = 0;
+            let maxLiquidtyY: Int = 0;
+
+            if (dX > 0){
+                maxLiquidtyX = xRemaining / yRemaining;
             }
-            else {
-                let position: LiquidityPosition = bin.positions.get(sender())!!;
-                self._updatePositionFee(position, bin);
-                position.liquidityX += liquidityX;
-                position.liquidityY += liquidityY;
+            else{
+                maxLiquidtyX = pow2(256) - 1;
             }
 
-            currentPrice = binUpperPrice;
+            if (dY > 0){
+                maxLiquidtyY = yRemaining / xRemaining;
+            }
+            else{
+                maxLiquidtyY = pow2(256) - 1;
+            }
+
+            let liquidityInBin = min(maxLiquidtyX, maxLiquidtyY);
+            bin.liquidity += liquidityInBin;
+            xUsed = dX * liquidityInBin;
+            yUsed = dY * liquidityInBin;
+
+            position.liquidityInfo.set(binInfo.binIndex, LiquidityInBins {
+                binId: binInfo.binIndex,
+                liquidity: liquidityInBin,
+                feeCheckpoint: bin.feePerLiquidity
+            });
+
+            xRemaining -= xUsed;
+            yRemaining -= yUsed;
+            currentPrice = bin.upperPrice;
         }
 
         self.tokenXReserve += xUsed;
         self.tokenYReserve += yUsed;
     }
 
-    receive(msg: RemoveLiquidity) {
-        require(msg.lowerPrice < msg.upperPrice, "Lower price must be less than upper price");
-        require(msg.liquidityPercentage > 0 && msg.liquidityPercentage <= 100, "Liquidity percentage must be between 0 and 100");
+    fun removeLiquidity(msg: RemoveLiquidity, position: LiquidityPosition, payload: RemoveLiquidityPayload) {
+        let priceGlobal: Int = self.getCurrentPrice();
+        let totalXRemoved: Int = 0;
+        let totalYRemoved: Int = 0;
+        let totalFeeWithdrawn: Int = 0;
 
-        let xReturned: Int = 0;
-        let yReturned: Int = 0;
+        foreach (key, value in position.liquidityInfo) {
+            let bin: LiquidityBin = self.bins.get(key)!!;
+            let liquidityInBin: LiquidityInBins = value;
 
-        let feeX: Int = 0;
-        let feeY: Int = 0;
+            let liquidity: Int = liquidityInBin.liquidity;
+            let feePerLiquidity: Int = bin.feePerLiquidity;
+            let binLowerPrice: Int = bin.lowerPrice;
+            let binUpperPrice: Int = bin.upperPrice;
 
-        let currentPrice: Int = msg.lowerPrice;
+            let sqrtBinLowerPrice = self.getSqrt(binLowerPrice);
+            let sqrtBinUpperPrice = self.getSqrt(binUpperPrice);
+            let sqrtGlobalPrice = self.getSqrt(priceGlobal);
 
-        while (currentPrice < msg.upperPrice) {
-            let bin: LiquidityBin = self.getOrCreateBin(currentPrice);
-            let binUpperPrice: Int = min(bin.upperPrice, msg.upperPrice);
+            let liquidityToRemove: Int = liquidity * payload.percentage / 100;
+            let feeCheckpoint: Int = liquidityInBin.feeCheckpoint;
 
-            if (bin.positions.get(sender()) == null) {
-                currentPrice = binUpperPrice;
+            let xRemoved = 0;
+            let yRemoved = 0;
+
+            if (liquidityToRemove > 0) {
+                if (priceGlobal < binLowerPrice) {
+                    // only token X is used
+                    xRemoved = liquidityToRemove * (sqrtBinUpperPrice - sqrtBinLowerPrice);
+                    yRemoved = 0;
+                } else if (priceGlobal > binUpperPrice) {
+                    // only token Y is used
+                    xRemoved = 0;
+                    yRemoved = liquidityToRemove * (sqrtBinUpperPrice - sqrtBinLowerPrice);
+                } else {
+                    // both tokens are used
+                    xRemoved = liquidityToRemove * (sqrtBinUpperPrice - sqrtGlobalPrice);
+                    yRemoved = liquidityToRemove * (sqrtGlobalPrice - sqrtBinLowerPrice);
+                }
+
+                let feeWithdrawn: Int = liquidityToRemove * (feePerLiquidity - feeCheckpoint);
+                totalXRemoved += xRemoved;
+                totalYRemoved += yRemoved;
+                totalFeeWithdrawn += feeWithdrawn;
             }
-            else{
-                let position: LiquidityPosition = bin.positions.get(sender())!!;
-                self._updatePositionFee(position, bin);
-                let liquidityX: Int = position.liquidityX;
-                let liquidityY: Int = position.liquidityY;
-                let dLiquidityX: Int = liquidityX * msg.liquidityPercentage / 100;
-                let dLiquidityY: Int = liquidityY * msg.liquidityPercentage / 100;
-
-                if (self.currentPrice < bin.lowerPrice) {
-                    // only token X is returned
-                    let dX: Int = dLiquidityX;
-                    xReturned += dX;
-                }
-                else if (self.currentPrice > bin.upperPrice) {
-                    // only token Y is returned
-                    let dY: Int = dLiquidityY;
-                    yReturned += dY;
-                }
-                else {
-                    // both tokens are returned
-                    let dX: Int = dLiquidityX * (self.currentPrice - bin.lowerPrice) / self.currentPrice;
-                    let dY: Int = dLiquidityY * (bin.upperPrice - self.currentPrice) / self.currentPrice;
-                    xReturned += dX;
-                    yReturned += dY;
-                }
-
-                // feeX += position.feeEarnedX * msg.liquidityPercentage / 100;
-                // feeY += position.feeEarnedY * msg.liquidityPercentage / 100;
-                // position.feeEarnedX -= feeX;
-                // position.feeEarnedY -= feeY;
-
-                xReturned += position.tokensOwedX * msg.liquidityPercentage / 100;
-                yReturned += position.tokensOwedY * msg.liquidityPercentage / 100;
-
-                position.tokensOwedX -= position.tokensOwedX * msg.liquidityPercentage / 100;
-                position.tokensOwedY -= position.tokensOwedY * msg.liquidityPercentage / 100;
-
-                bin.liquidityX -= dLiquidityX;
-                bin.liquidityY -= dLiquidityY;
-                position.liquidityX -= dLiquidityX;
-                position.liquidityY -= dLiquidityY;
-
-                if (position.liquidityX == 0 && position.liquidityY == 0) {
-                    bin.positions.del(sender());
-                }
-            }
-
-            currentPrice = binUpperPrice;
         }
 
-        self.tokenXReserve -= xReturned;
-        self.tokenYReserve -= yReturned;
+        self.tokenXReserve -= totalXRemoved;
+        self.tokenYReserve -= totalYRemoved;
+
+        // send the removed tokens to the receiver
+        // sendTokens(msg.sender, totalXRemoved);
+        // sendTokens(msg.sender, totalYRemoved);
     }
 
-    receive(msg: Swap) {
-        let feeAmount: Int = msg.amountIn * self.fee / 100;
-        let amountInAfterFee: Int = msg.amountIn - feeAmount;
+    fun swap(msg: TransferNotification, payload: TransferNotificationPayload, swapData: SwapPayload) {
+        // check which token is being swapped
+        let tokenWallet: Address = payload.token_wallet;
+        let isX: Bool = false;
 
-        if (msg.tokenIn == self.tokenX) {
-            let amountOut: Int = self._swapXForY(amountInAfterFee, feeAmount);
-            self.tokenXReserve += amountInAfterFee;
-            self.tokenYReserve -= amountOut;
-
-            self.globalFeeXAccumulator += feeAmount;
+        if tokenWallet == self.tokenX {
+            isX = true;
+        } else if tokenWallet == self.tokenY {
+            isX = false;
+        } else {
+            require(false, "Invalid token wallet address");
         }
-        else if (msg.tokenIn == self.tokenY) {
-            let amountOut: Int = self._swapYForX(amountInAfterFee, feeAmount);
-            self.tokenXReserve -= amountInAfterFee;
-            self.tokenYReserve += amountOut;
 
-            self.globalFeeYAccumulator += feeAmount;
+        if (isX) {
+            // swap x for y
+            self.swapXForY(msg.jetton_amount, swapData);
         }
         else {
-            require(false, "Invalid token");
+            // swap y for x
+            self.swapYForX(msg.jetton_amount, swapData);
         }
-
-        self.updatePrice();
-        self.adjustFee();
     }
 
-    fun _swapXForY(xIn: Int, feeAmount: Int): Int {
-        let yOut: Int = 0;
-        let remainingX: Int = xIn;
-        let currentPrice: Int = self.currentPrice;
-        let maxPrice: Int = self._getMaxPrice();
+    fun swapXForY(swapAmount: Int, swapData: SwapPayload) {
+        let remainingAmount: Int = swapAmount;
+        let priceGlobal: Int = self.getCurrentPrice();
+        let totaldX: Int = 0;
+        let totaldY: Int = 0;
 
-        let activeBins: map<Int, LiquidityBin> = emptyMap();
-        let i: Int = 0;
+        let done: Bool = false;
 
-        while (remainingX > 0 && currentPrice < maxPrice) {
-            let bin: LiquidityBin = self.getOrCreateBin(currentPrice);
-            if (bin.liquidityY > 0) {
-                let dX: Int = min(remainingX, bin.liquidityX);
-                let dY: Int = dX * (bin.upperPrice - currentPrice) / currentPrice;
-                let dYAvailable: Int = bin.liquidityY * currentPrice / (bin.upperPrice - bin.lowerPrice);
+        while (remainingAmount > 0 && !done) {
+            let binInfo: BinInfo = self.getOrCreateBin(priceGlobal);
+            let bin: LiquidityBin = binInfo.bin;
+            
+            let effectiveSwap: Int = remainingAmount * (1000000 - self.fee) / 1000000;
 
-                if (dYAvailable >= dY) {
-                    yOut += dY;
-                    remainingX -= dX;
-                }
-                else {
-                    yOut += dYAvailable;
-                    remainingX -= dYAvailable;
-                }
-                activeBins.set(i, bin);
-                i += 1;
+            let deltaPrice: Int = effectiveSwap / bin.liquidity;
+            let pNew = min(priceGlobal + deltaPrice, bin.upperPrice);
+
+            let sqrtPNew = self.getSqrt(pNew);
+            let sqrtPriceGlobal = self.getSqrt(priceGlobal);
+
+            let dY = bin.liquidity * ((1/sqrtPNew) - (1/sqrtPriceGlobal));
+            // let dX = bin.liquidity * (sqrtPNew - sqrtPriceGlobal);
+            let dX = effectiveSwap;
+
+            totaldX += dX;
+            totaldY += dY;
+
+            remainingAmount -= (dX * 1000000) / (1000000 - self.fee);
+            priceGlobal = pNew;
+
+            if (remainingAmount <= 0 || priceGlobal < bin.upperPrice) {
+                done = true;
             }
-            currentPrice = bin.upperPrice;
-        }
-
-        // let totalLiquidity: Int = 0;
-        // if (!activeBins.isEmpty()) {
-        //     foreach (key, value in activeBins) {
-        //         let bin: LiquidityBin = value;
-        //         totalLiquidity += bin.liquidity;
-        //     }
-        //     let feePerLiquidity = feeAmount / totalLiquidity;
-        //     foreach (key, value in activeBins) {
-        //         let bin: LiquidityBin = value;
-        //         bin.feeGrowthGlobalX += feePerLiquidity;
-        //     }
-        // }
-
-        return yOut;
-    }
-
-    fun _swapYForX(yIn: Int, feeAmount: Int): Int {
-        let xOut: Int = 0;
-        let remainingY: Int = yIn;
-        let currentPrice: Int = self.currentPrice;
-        let maxPrice: Int = self._getMinPrice();
-        let i: Int = 0;
-        let activeBins: map<Int, LiquidityBin> = emptyMap();
-
-        while (remainingY > 0 && currentPrice > maxPrice) {
-            let bin: LiquidityBin = self.getOrCreateBin(currentPrice);
-            if (bin.liquidityX > 0) {
-                let dY: Int = min(remainingY, bin.liquidityY * currentPrice / (bin.upperPrice - bin.lowerPrice));
-                let dX: Int = dY * currentPrice / (bin.upperPrice - currentPrice);
-
-                xOut += dX;
-                remainingY -= dY;
-
-                activeBins.set(i, bin);
-                i += 1;
-            }
-            currentPrice = bin.upperPrice;
-        }
-
-        // let totalLiquidity: Int = 0;
-        // if (!activeBins.isEmpty()) {
-        //     foreach (key, value in activeBins) {
-        //         let bin: LiquidityBin = value;
-        //         totalLiquidity += bin.liquidity;
-        //     }
-        //     let feePerLiquidity = feeAmount / totalLiquidity;
-        //     foreach (key, value in activeBins) {
-        //         let bin: LiquidityBin = value;
-        //         bin.feeGrowthGlobalY += feePerLiquidity;
-        //     }
-        // }
-
-        return xOut;
-    }
-
-    fun _getMaxPrice(): Int {
-        let maxPrice: Int = 0;
-        let i: Int = 0;
-        foreach (key, value in self.bins) {
-            let bin: LiquidityBin = value;
-            if (bin.upperPrice > maxPrice) {
-                maxPrice = bin.upperPrice;
+            else{
+                done = false;
             }
         }
-        return maxPrice;
+
+        self.tokenXReserve += totaldX;
+        self.tokenYReserve -= totaldY;
+
+        // update the global fee accumulator
+        // self.globalFeeXAccumulator += totaldX * self.fee;
+        // self.globalFeeYAccumulator += totaldY * self.fee;
+
+        // send the swapped tokens to the receiver
+        // sendTokens(swapData.receiver_address, totaldY);
     }
 
-    fun _getMinPrice(): Int {
-        let minPrice: Int = 0;
-        let i: Int = 0;
-        foreach (key, value in self.bins) {
-            let bin: LiquidityBin = value;
-            if (bin.lowerPrice < minPrice) {
-                minPrice = bin.lowerPrice;
+    fun swapYForX (swapAmount: Int, swapData: SwapPayload) {
+        let remainingAmount: Int = swapAmount;
+        let priceGlobal: Int = self.getCurrentPrice();
+        let totaldX: Int = 0;
+        let totaldY: Int = 0;
+
+        let done: Bool = false;
+
+        while (remainingAmount > 0 && !done) {
+            let binInfo: BinInfo = self.getOrCreateBin(priceGlobal);
+            let bin: LiquidityBin = binInfo.bin;
+            
+            let effectiveSwap: Int = remainingAmount * (1000000 - self.fee) / 1000000;
+
+            let deltaPrice: Int = effectiveSwap / bin.liquidity;
+            let pNew = max(priceGlobal - deltaPrice, bin.lowerPrice);
+
+            let sqrtPNew = self.getSqrt(pNew);
+            let sqrtPriceGlobal = self.getSqrt(priceGlobal);
+
+            let dX = bin.liquidity * (sqrtPriceGlobal - sqrtPNew);
+            // let dY = bin.liquidity * (priceGlobal - pNew);
+            let dY = effectiveSwap;
+
+            totaldX += dX;
+            totaldY += dY;
+
+            remainingAmount -= (dY * 1000000) / (1000000 - self.fee);
+            priceGlobal = pNew;
+
+            if (remainingAmount <= 0 || priceGlobal > bin.lowerPrice) {
+                done = true;
+            }
+            else{
+                done = false;
             }
         }
-        return minPrice;
+
+        self.tokenXReserve -= totaldX;
+        self.tokenYReserve += totaldY;
+
+        // update the global fee accumulator
+        // self.globalFeeXAccumulator += totaldX * self.fee;
+        // self.globalFeeYAccumulator += totaldY * self.fee;
+
+        // send the swapped tokens to the receiver
+        // sendTokens(swapData.receiver_address, totaldX);
     }
 
-    fun _updatePositionFee (position: LiquidityPosition, bin: LiquidityBin) {
-        let feeGrowthDeltaX: Int = bin.feeGrowthGlobalX - position.feeGrowthInsideXLast;
-        let feeGrowthDeltaY: Int = bin.feeGrowthGlobalY - position.feeGrowthInsideYLast;
+    fun getOrCreateBin(price: Int): BinInfo {
+        let binIndex: Int = price / self.binWidth;
+        let bin1: LiquidityBin? = self.bins.get(binIndex);
 
-        if (position.liquidityX > 0 || position.liquidityY > 0) {
-            position.tokensOwedX += feeGrowthDeltaX * position.liquidityX;
-            position.tokensOwedY += feeGrowthDeltaY * position.liquidityY;
+        if bin1 != null {
+            let bin: LiquidityBin = bin1!!;
+            let binInfo: BinInfo = BinInfo {
+                binIndex: binIndex,
+                bin: bin
+            };
+            return binInfo;
+        }
+        else{
+            let bin: LiquidityBin = LiquidityBin {
+                lowerPrice: binIndex * self.binWidth,
+                upperPrice: (binIndex + 1) * self.binWidth,
+                liquidity: 0,
+                feePerLiquidity: 0
+            };
+
+            self.bins.set(binIndex, bin);
+            let binInfo: BinInfo = BinInfo {
+                binIndex: binIndex,
+                bin: bin
+            };
+            return binInfo;
+        }
+    }
+
+    fun getCurrentPrice(): Int {
+        let SCALE_FACTOR = 1_000_000_000_000_000_000; // 10^18 for fixed-point arithmetic
+        let x = self.tokenXReserve;
+        let y = self.tokenYReserve;
+        if (x == 0 || y == 0) {
+            return 0;
+        }
+        let scaledY = y * SCALE_FACTOR;
+        require(scaledY / SCALE_FACTOR == y, "Overflow");
+        let p = 0;
+        p = scaledY / x;
+        return p;
+    }
+
+    fun getSqrt(x: Int): Int {
+        require(x >= 0, "Negative number");
+
+        if (x ==0 || x == 1) {
+            return x;
         }
 
-        position.feeGrowthInsideXLast = bin.feeGrowthGlobalX;
-        position.feeGrowthInsideYLast = bin.feeGrowthGlobalY;
-    }
+        let approx = x;
+        let betterApprox = (approx + x / approx) / 2; // Newton's method
 
-    fun updatePrice() {
-        self.currentPrice = self.tokenYReserve / self.tokenXReserve;
-    }
+        while (betterApprox < approx) {
+            approx = betterApprox;
+            betterApprox = (approx + x / approx) / 2;
+        }
 
-    fun adjustFee() {
-        // TODO: implement fee adjustment
+        return approx;
     }
 }
-
-// contract PositionManager with Deployable {
-//     positions: map<Address, LiquidityPosition>;
-
-//     init() {
-//         self.positions = emptyMap();
-//     }
-
-//     fun _generatePositionId(lowerPrice: Int, upperPrice: Int): String {
-//         return lowerPrice.toString() + "-" + upperPrice.toString();
-//     }
-// }
 
 // https://chatgpt.com/c/6717f1d7-58dc-8013-ba6e-ef33afb01441

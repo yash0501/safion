@@ -20,7 +20,11 @@
     "eruda": "^3.0.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.23.0"
+    "react-icons": "^5.3.0",
+    "react-router-dom": "^6.23.0",
+    "react-starfield": "^1.0.3",
+    "react-typed": "^2.0.12",
+    "react-typing-effect": "^2.0.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.2.0",
@@ -34,6 +38,7 @@
     "eslint-plugin-react": "^7.34.1",
     "gh-pages": "^6.1.1",
     "globals": "^15.2.0",
+    "tailwindcss": "^3.4.14",
     "typescript": "^5.4.5",
     "typescript-eslint": "^7.8.0",
     "vite": "^5.2.11",

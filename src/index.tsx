@@ -6,6 +6,9 @@ import { Root } from '@/components/Root.tsx';
 import { EnvUnsupported } from '@/components/EnvUnsupported.tsx';
 import { init } from '@/init.ts';
 
+import { Buffer } from "buffer";
+window.Buffer = Buffer; // Make Buffer available globally
+
 import '@telegram-apps/telegram-ui/dist/styles.css';
 import './index.css';
 

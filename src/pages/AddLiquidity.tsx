@@ -1,10 +1,14 @@
 import { useState, useEffect } from "react";
 import Navbar from "@/pages/Navbar.tsx";
 import StarfieldAnimation from "react-starfield";
-import { useTonAddress, TonConnectButton } from "@tonconnect/ui-react";
+import { useTonAddress, TonConnectButton, useTonWallet, useTonConnectUI } from "@tonconnect/ui-react";
+// import { TonClient, Address } from "@ton/ton";
+import { beginCell, Cell, Address, toNano } from "@ton/core"; // Import Address
+import { Buffer } from "buffer";
 
 const AddLiquidity = () => {
   const tonAddress = useTonAddress(); // Fetch wallet address
+  const [tonConnectUI] = useTonConnectUI(); // TonConnect UI instance
   const [selectedPair, setSelectedPair] = useState({
     token1: "TON",
     token2: "USDT",
@@ -47,7 +51,7 @@ const AddLiquidity = () => {
     depositAmount2,
   ]);
 
-  const tokens = ["ETH", "USDT", "TON", "1INCH", "ZRX"];
+  const tokens = ["TON", "USDT"];
 
   const updatePriceRange = async (amount, baseToken, targetToken, updateOtherAmount) => {
     try {
@@ -91,12 +95,96 @@ const AddLiquidity = () => {
     }
   };
 
+  const handleJettonTransferWithPayload = async () => {  
+    // Define addresses and amounts
+    const jettonWalletAddress = "kQDZS7rzmexsaRg6HxOAomK2kVEh0cfi00AoSSkujxgF3uwB"; // Sender's Jetton Wallet Address
+    // const recipientAddress = "EQBmSTu-q_e6RnfR7f4lWzZJbcDOSf_yUqjK5LzXBf9CVqpA"; // Recipient's Wallet Address
+    const recipientAddress = "0QBZhckaQ4TTyuowAuD9DTCLBmyIqvrScZ_hZ0KMJAD-mkyh"
+    const transferAmount = BigInt(1e9); // Amount in nanoTON (1 Jetton)
+  
+    // Prepare transaction message
+    const transactionMessage = {
+      validUntil: Math.floor(Date.now() / 1000) + 600, // Validity: 10 minutes
+      messages: [
+        {
+          address: jettonWalletAddress,
+          amount: "0", // No direct TON transfer
+          payload: createJettonTransferPayload(recipientAddress, transferAmount)
+        },
+      ],
+    };
+  
+    try {
+      // Send the transaction using TonConnect
+      await tonConnectUI.sendTransaction(transactionMessage);
+      console.log("Jetton transfer with payload successful!");
+    } catch (error) {
+      console.error("Error during Jetton transfer with payload:", error);
+    }
+  };
+
+  const createJettonTransferPayload = (recipientAddressBase64: string, amount: BigInt) => {
+    const OPERATION_TRANSFER = BigInt(0xf8a7ea5); // Standard Jetton transfer operation
+    const COMMENT = ""; // Optional comment
+  
+    const recipientAddress = Address.parse(recipientAddressBase64);
+  
+    // Create additionalData Cell
+    const additionalData: Cell = beginCell()
+      .storeInt(0, 32) // Some operation code (customize as needed)
+      .storeAddress(recipientAddress) // Recipient address
+      .storeInt(BigInt(5000000), 64) // Example data
+      .storeInt(BigInt(6000000), 64) // Example data
+      .endCell();
+  
+    // Create payload Cell
+    const payload: Cell = beginCell()
+      .storeInt(OPERATION_TRANSFER, 64) // Operation code as BigInt
+      .storeAddress(recipientAddress) // Target address
+      .storeInt(BigInt(Math.floor(Date.now() / 1000) + 600), 64) // Deadline: 10 minutes from now
+      .storeRef(additionalData) // Reference additionalData Cell
+      .endCell();
+  
+    console.log("Payload as Cell:", payload.toString());
+    console.log("AdditionalData as Cell:", additionalData.toString());
+  
+    const body = new Uint8Array([
+      ...numberToBytes(OPERATION_TRANSFER, 32), // Jetton operation (4 bytes)
+      ...hexToBytes(recipientAddress.toString()), // Recipient address
+      ...numberToBytes(amount, 32), // Transfer amount (8 bytes)
+      ...numberToBytes(0, 32), // Forward TON amount (usually 0)
+      ...stringToBytes(COMMENT),
+    ]);
+  
+    return Buffer.from(body).toString("base64"); // Convert to base64 format for payload
+  };  
+  
+  // Utility functions for payload creation
+  const numberToBytes = (number: number | BigInt, size: number) => {
+    const isBigInt = typeof number === "bigint";
+    const num = isBigInt ? number : BigInt(number); // Ensure input is BigInt
+    return Array(size)
+      .fill(0)
+      .map((_, i) => Number((num >> BigInt((size - i - 1) * 8)) & BigInt(0xff)));
+  };
+  
+  
+  const stringToBytes = (str) => Array.from(new TextEncoder().encode(str));
+  
+  const hexToBytes = (hex) => {
+    const result = [];
+    for (let i = 0; i < hex.length; i += 2) {
+      result.push(parseInt(hex.substr(i, 2), 16));
+    }
+    return result;
+  };
+
   const handleAddLiquidity = async () => {
     if (!isWalletConnected) {
       console.error("Wallet is not connected");
       return;
     }
-
+  
     const data = {
       lowerPrice: parseFloat(lowPrice),
       upperPrice: parseFloat(highPrice),
@@ -106,8 +194,9 @@ const AddLiquidity = () => {
       tokenY: selectedPair.token2,
       userAddress,
     };
-
+  
     try {
+      // Backend call for adding liquidity (optional, if needed for your application)
       const response = await fetch(
         "https://safion-simple-backend.onrender.com/liquidity-providers/create",
         {
@@ -118,9 +207,28 @@ const AddLiquidity = () => {
           body: JSON.stringify(data),
         }
       );
-
+  
       if (response.ok) {
         const result = await response.json();
+
+        const transactionData = {
+          validUntil: Math.floor(Date.now() / 1000) + 60, // 60 seconds validity
+          messages: [
+            {
+              address: "EQDdE5pHo6QRNi4srfwPyoH8HDNQU26dBvvLas4MQXbqdUB0", // Replace with the recipient's TON wallet address
+              amount: `${parseFloat(depositAmount1) * 1e9}`, // Convert TON to nanoton
+              bounce: false,
+              payload: "",
+            },
+          ],
+        };
+    
+        try {
+          await tonConnectUI.sendTransaction(transactionData);
+          console.log("Transaction successfully sent!");
+        } catch (error) {
+          console.error("Error sending transaction:", error);
+        }
         console.log("Liquidity added successfully:", result);
       } else {
         console.error("Failed to add liquidity", response.statusText);

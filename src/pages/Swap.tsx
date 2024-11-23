@@ -1,57 +1,111 @@
-import { FaWallet } from "react-icons/fa";
+"use client";
 import { useState } from "react";
 import axios from "axios";
+import { debounce } from "lodash";
 import Navbar from "@/pages/Navbar.tsx";
 import StarfieldAnimation from "react-starfield";
-import { TonConnectButton } from "@tonconnect/ui-react";
+import { useTonAddress, useTonConnectUI } from "@tonconnect/ui-react";
+import { message } from "antd";
+
+// Component: Swap
+interface PriceData {
+  pricePerUnit: number;
+  finalPrice: number;
+}
 
 const Swap = () => {
-  const [sellAmount, setSellAmount] = useState(""); // Empty string initially
-  const [buyAmount, setBuyAmount] = useState(""); // Empty string initially
-  const [isWalletConnected, setIsWalletConnected] = useState(false);
-  const [selectedToken, setSelectedToken] = useState("Select Token"); // Default token value
-  const [priceData, setPriceData] = useState<any>(null); // State to store price data
-  const [inputField, setInputField] = useState<"sell" | "buy" | null>(null); // Track which input field was used
+  const [sellAmount, setSellAmount] = useState("");
+  const [buyAmount, setBuyAmount] = useState("");
+  const [priceDataSell, setPriceDataSell] = useState<PriceData | null>(null);
+  const [priceDataBuy, setPriceDataBuy] = useState<PriceData | null>(null);
+  const [loadingSell, setLoadingSell] = useState(false);
+  const [loadingBuy, setLoadingBuy] = useState(false);
+  const [error, setError] = useState("");
+  const tonAddress = useTonAddress();
+  const [tonConnectUI] = useTonConnectUI();
 
-  const handleWalletConnect = () => {
-    setIsWalletConnected(!isWalletConnected);
+  // Fetch price for selling TON
+  const fetchPriceSell = debounce(async (amount) => {
+    setLoadingSell(true);
+    setError("");
+    try {
+      const response = await axios.get(
+        `https://safion-simple-backend.onrender.com/liquidity-providers/price/ton/usd`,
+        { params: { amount } }
+      );
+      setPriceDataSell(response.data);
+      setBuyAmount(response.data.finalPrice);
+    } catch (error) {
+      setError("Failed to fetch TON sell price. Please try again.");
+    } finally {
+      setLoadingSell(false);
+    }
+  }, 500);
+
+  const fetchPriceBuy = debounce(async (amount) => {
+    setLoadingBuy(true);
+    setError("");
+    try {
+      const response = await axios.get(
+        `https://safion-simple-backend.onrender.com/liquidity-providers/price/usdc/ton`,
+        { params: { amount } }
+      );
+      console.log(response, "price1");
+      setPriceDataBuy(response.data);
+      setSellAmount(response.data.finalPrice); // Auto-update sell amount
+    } catch (error) {
+      setError("Failed to fetch TON buy price. Please try again.");
+    } finally {
+      setLoadingBuy(false);
+    }
+  }, 500);
+
+  // Handle change in sell amount
+  const handleSellAmountChange = (e) => {
+    const value = e.target.value;
+    setSellAmount(value);
+
+    if (value) {
+      fetchPriceSell(value);
+    }
   };
 
-  // Handle token change for the first dropdown
-  const handleTokenChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setSelectedToken(e.target.value);
+  // Handle change in buy amount
+  const handleBuyAmountChange = (e) => {
+    const value = e.target.value;
+    setBuyAmount(value);
+
+    if (value) {
+      fetchPriceBuy(value);
+    }
   };
 
-  // Handle the API call on Swap button click
+  // Placeholder swap handler
   const handleSwap = async () => {
-    if (selectedToken === "Bitcoin") {
-      try {
-        if (inputField === "sell" && sellAmount) {
-          // API call based on sellAmount input
-          const response = await axios.get(
-            `https://safion-simple-backend.onrender.com/liquidity-providers/price/bitcoin/usd?amount=${sellAmount}`
-          );
-          setPriceData(response.data);
-          // Update the buyAmount based on the API response
-          setBuyAmount(response.data.totalPrice); // Now using totalPrice from the API response
-        } else if (inputField === "buy" && buyAmount) {
-          // API call based on buyAmount input, convert buyAmount to sellAmount
-          const response = await axios.get(
-            `https://safion-simple-backend.onrender.com/liquidity-providers/price/usd/bitocoin?amount=${buyAmount}`
-          );
-          setPriceData(response.data);
-          // Update the sellAmount based on the API response
-          setSellAmount(
-            (parseFloat(buyAmount) / response.data.pricePerUnit).toFixed(8)
-          );
-        } else {
-          alert("Please enter an amount.");
-        }
-      } catch (error) {
-        console.error("Error fetching price data:", error);
-      }
-    } else {
-      alert("Please select Bitcoin as the token.");
+    if (!tonAddress) {
+      message.error("Please connect your wallet first.");
+      console.error("TON Connect UI not available.");
+      return;
+    }
+    const transactionData = {
+      validUntil: Math.floor(Date.now() / 1000) + 60,
+      messages: [
+        {
+          address: "address",
+          amount: `${parseFloat(sellAmount) * 1e9}`,
+          bounce: false,
+          payload: "",
+        },
+      ],
+    };
+
+    try {
+      await tonConnectUI.sendTransaction(transactionData);
+      console.log("Sell transaction successfully sent!");
+      setSellAmount("");
+      setBuyAmount("");
+    } catch (error) {
+      console.error("Error sending sell transaction:", error);
     }
   };
 
@@ -59,8 +113,8 @@ const Swap = () => {
     <>
       <Navbar />
       <StarfieldAnimation
-        numParticles={500} // Customize the number of stars
-        depth={500} // Adjust star depth for a more immersive effect
+        numParticles={500}
+        depth={500}
         style={{
           position: "absolute",
           top: 0,
@@ -71,71 +125,56 @@ const Swap = () => {
         }}
       />
       <div className="flex items-center justify-center h-screen bg-gray-900">
-        <div className="bg-gray-900 p-4 rounded-lg shadow-lg text-white max-w-md w-full">
-          {/* Sell section */}
+        <div className="bg-gray-900 p-6 rounded-lg shadow-lg text-white max-w-md w-full">
+          {/* Sell Section */}
           <div className="flex items-center justify-between bg-gray-800 rounded-lg p-4 mb-4">
-            <div>
+            <div className="flex-1 mr-4">
               <label className="block text-sm mb-2">Sell</label>
               <input
                 type="text"
                 value={sellAmount}
                 placeholder="Enter amount to sell"
-                onChange={(e) => {
-                  setSellAmount(e.target.value);
-                  setInputField("sell"); // Mark the field being used
-                }}
+                onChange={handleSellAmountChange}
                 className="text-2xl bg-transparent outline-none w-full text-white placeholder-1xl placeholder-gray-500 border-b-2 border-gray-700 focus:border-purple-600 transition duration-200"
               />
-
               <div className="text-gray-500 text-sm mt-1">
-                {/* Show the pricePerUnit fetched from the API */}
-                {priceData
-                  ? `Price per Unit: $${priceData.pricePerUnit}`
+                {loadingSell
+                  ? "Loading sell price..."
+                  : priceDataSell
+                  ? `Price per Unit: $${priceDataSell.pricePerUnit.toFixed(2)}`
                   : "Price per Unit: $0.00"}
               </div>
             </div>
-
-            {/* Token dropdown for the Sell section */}
-            {/* <select
-              value={selectedToken}
-              onChange={handleTokenChange}
-              className="bg-gray-700 text-white px-3 py-2 rounded-lg flex items-center space-x-1 outline-none"
-            >
-              <option value="Select Token" disabled>
-                Select Token
-              </option>
-              <option value="Bitcoin">Bitcoin</option>
-              <option value="Ethereum">Ethereum</option>
-              <option value="TON">TON</option>
-            </select> */}
             <div className="bg-gray-700 text-white px-3 py-2 rounded-lg flex items-center space-x-1">
               <span>TON</span>
             </div>
           </div>
 
-          {/* Swap button */}
-
-          {/* Buy section as a container */}
+          {/* Buy Section */}
           <div className="flex items-center justify-between bg-gray-800 rounded-lg p-4 mb-4">
-            <div>
+            <div className="flex-1 mr-4">
               <label className="block text-sm mb-2">Buy</label>
               <input
                 type="text"
                 value={buyAmount}
                 placeholder="Enter amount to buy"
-                onChange={(e) => {
-                  setBuyAmount(e.target.value);
-                  setInputField("buy"); // Mark the field being used
-                }}
+                onChange={handleBuyAmountChange}
                 className="text-2xl bg-transparent outline-none w-full text-white placeholder-1xl placeholder-gray-500 border-b-2 border-gray-700 focus:border-purple-600 transition duration-200"
               />
+              <div className="text-gray-500 text-sm mt-1">
+                {loadingBuy
+                  ? "Loading buy price..."
+                  : priceDataBuy
+                  ? `Price per Unit: $${priceDataBuy.pricePerUnit.toFixed(2)}`
+                  : "Price per Unit: $0.00"}
+              </div>
             </div>
-
-            {/* Fixed value for Buy section */}
             <div className="bg-gray-700 text-white px-3 py-2 rounded-lg flex items-center space-x-1">
               <span>USD</span>
             </div>
           </div>
+
+          {/* Swap Button */}
           <div className="flex justify-center mb-4">
             <button
               onClick={handleSwap}
@@ -145,26 +184,8 @@ const Swap = () => {
             </button>
           </div>
 
-          {/* Connect wallet button */}
-          {/* <button
-                        onClick={handleWalletConnect}
-                        className="w-full bg-purple-700 text-white text-lg py-3 rounded-lg hover:bg-purple-800 transition"
-                    >
-                        {isWalletConnected ? "Wallet Connected" : "Connect Wallet"}
-                    </button> */}
-
-          {/* Exchange rate */}
-          <div className="mt-4 text-sm text-gray-400">
-            1 {selectedToken} = 0.000378768 ETH ($1.00)
-          </div>
-
-          {/* Fees */}
-          <div className="flex justify-between items-center mt-4 text-sm text-gray-400">
-            <span>Fees</span>
-            <span className="flex items-center">
-              <FaWallet className="mr-1" /> $9.80
-            </span>
-          </div>
+          {/* Error Message */}
+          {error && <div className="text-red-500 text-sm mt-4">{error}</div>}
         </div>
       </div>
     </>

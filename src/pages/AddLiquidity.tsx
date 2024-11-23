@@ -21,6 +21,8 @@ const AddLiquidity = () => {
   const [userAddress, setUserAddress] = useState("");
   const [isFormValid, setIsFormValid] = useState(false);
   const [isWalletConnected, setIsWalletConnected] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false); // Success modal state
+  const [isLoading, setIsLoading] = useState(false); // Loader state
 
   useEffect(() => {
     // Update userAddress and wallet connection status when wallet is connected
@@ -224,9 +226,19 @@ const AddLiquidity = () => {
         };
     
         try {
-          await tonConnectUI.sendTransaction(transactionData);
+          setIsLoading(true); // Show loader
+          let txn = await tonConnectUI.sendTransaction(transactionData);
+          console.log(txn);
+          if (txn) {
+            // Simulate a delay before showing the success modal
+            setTimeout(() => {
+              setIsLoading(false); // Hide loader
+              setShowSuccessModal(true); // Show success modal
+            }, 10000); // 10 seconds
+          }
           console.log("Transaction successfully sent!");
         } catch (error) {
+          setIsLoading(false); // Hide loader in case of error
           console.error("Error sending transaction:", error);
         }
         console.log("Liquidity added successfully:", result);
@@ -381,6 +393,34 @@ const AddLiquidity = () => {
           )}
         </div>
       </div>
+
+      {/* Loader */}
+      {isLoading && (
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50">
+          <div className="spinner border-t-4 border-purple-500 rounded-full w-12 h-12 animate-spin"></div>
+          <p className="text-white mt-4">Processing your transaction...</p>
+        </div>
+      )}
+
+      {/* Success Modal */}
+      {showSuccessModal && (
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-lg shadow-lg text-center">
+            <h2 className="text-2xl font-bold mb-4 text-gray-800">
+              Liquidity Added Successfully!
+            </h2>
+            <p className="text-gray-600 mb-6">
+              Your liquidity has been successfully added to the pool.
+            </p>
+            <button
+              onClick={() => setShowSuccessModal(false)}
+              className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 };

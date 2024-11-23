@@ -1,5 +1,4 @@
-"use client";
-import { useState } from "react";
+import React, { useState } from "react";
 import axios from "axios";
 import { debounce } from "lodash";
 import Navbar from "@/pages/Navbar.tsx";
@@ -7,24 +6,18 @@ import StarfieldAnimation from "react-starfield";
 import { useTonAddress, useTonConnectUI } from "@tonconnect/ui-react";
 import { message } from "antd";
 
-// Component: Swap
-interface PriceData {
-  pricePerUnit: number;
-  finalPrice: number;
-}
-
 const Swap = () => {
   const [sellAmount, setSellAmount] = useState("");
   const [buyAmount, setBuyAmount] = useState("");
-  const [priceDataSell, setPriceDataSell] = useState<PriceData | null>(null);
-  const [priceDataBuy, setPriceDataBuy] = useState<PriceData | null>(null);
+  const [priceDataSell, setPriceDataSell] = useState(null);
+  const [priceDataBuy, setPriceDataBuy] = useState(null);
   const [loadingSell, setLoadingSell] = useState(false);
   const [loadingBuy, setLoadingBuy] = useState(false);
   const [error, setError] = useState("");
+  const [isSwapSuccessful, setIsSwapSuccessful] = useState(false); // New state for modal visibility
   const tonAddress = useTonAddress();
   const [tonConnectUI] = useTonConnectUI();
 
-  // Fetch price for selling TON
   const fetchPriceSell = debounce(async (amount) => {
     setLoadingSell(true);
     setError("");
@@ -47,10 +40,9 @@ const Swap = () => {
     setError("");
     try {
       const response = await axios.get(
-        `https://safion-simple-backend.onrender.com/liquidity-providers/price/usdc/ton`,
+        `https://safion-simple-backend.onrender.com/liquidity-providers/price/usd/ton`,
         { params: { amount } }
       );
-      console.log(response, "price1");
       setPriceDataBuy(response.data);
       setSellAmount(response.data.finalPrice); // Auto-update sell amount
     } catch (error) {
@@ -60,38 +52,33 @@ const Swap = () => {
     }
   }, 500);
 
-  // Handle change in sell amount
   const handleSellAmountChange = (e) => {
     const value = e.target.value;
     setSellAmount(value);
-
     if (value) {
       fetchPriceSell(value);
     }
   };
 
-  // Handle change in buy amount
   const handleBuyAmountChange = (e) => {
     const value = e.target.value;
     setBuyAmount(value);
-
     if (value) {
       fetchPriceBuy(value);
     }
   };
 
-  // Placeholder swap handler
   const handleSwap = async () => {
     if (!tonAddress) {
       message.error("Please connect your wallet first.");
-      console.error("TON Connect UI not available.");
       return;
     }
+
     const transactionData = {
       validUntil: Math.floor(Date.now() / 1000) + 60,
       messages: [
         {
-          address: "address",
+          address: "0QBZhckaQ4TTyuowAuD9DTCLBmyIqvrScZ_hZ0KMJAD-mkyh",
           amount: `${parseFloat(sellAmount) * 1e9}`,
           bounce: false,
           payload: "",
@@ -101,11 +88,11 @@ const Swap = () => {
 
     try {
       await tonConnectUI.sendTransaction(transactionData);
-      console.log("Sell transaction successfully sent!");
+      setIsSwapSuccessful(true); // Show success modal
       setSellAmount("");
       setBuyAmount("");
     } catch (error) {
-      console.error("Error sending sell transaction:", error);
+      setError("Error sending transaction. Please try again.");
     }
   };
 
@@ -126,7 +113,6 @@ const Swap = () => {
       />
       <div className="flex items-center justify-center h-screen bg-gray-900">
         <div className="bg-gray-900 p-6 rounded-lg shadow-lg text-white max-w-md w-full">
-          {/* Sell Section */}
           <div className="flex items-center justify-between bg-gray-800 rounded-lg p-4 mb-4">
             <div className="flex-1 mr-4">
               <label className="block text-sm mb-2">Sell</label>
@@ -149,8 +135,6 @@ const Swap = () => {
               <span>TON</span>
             </div>
           </div>
-
-          {/* Buy Section */}
           <div className="flex items-center justify-between bg-gray-800 rounded-lg p-4 mb-4">
             <div className="flex-1 mr-4">
               <label className="block text-sm mb-2">Buy</label>
@@ -173,8 +157,6 @@ const Swap = () => {
               <span>USD</span>
             </div>
           </div>
-
-          {/* Swap Button */}
           <div className="flex justify-center mb-4">
             <button
               onClick={handleSwap}
@@ -184,10 +166,42 @@ const Swap = () => {
             </button>
           </div>
 
-          {/* Error Message */}
+          {/* Platform Fee and Transaction Fee */}
+          <div className="text-sm text-gray-400">
+            {priceDataBuy && (
+              <>
+                <p>
+                  <strong>Platform Fee:</strong> ${priceDataBuy.platformFee.toFixed(4)}
+                </p>
+                <p>
+                  <strong>Transaction Fee:</strong> ${priceDataBuy.transactionFee.toFixed(2)}
+                </p>
+              </>
+            )}
+          </div>
+
           {error && <div className="text-red-500 text-sm mt-4">{error}</div>}
         </div>
       </div>
+      {/* Success Modal */}
+      {isSwapSuccessful && (
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-lg shadow-lg text-center">
+            <h2 className="text-2xl font-bold mb-4 text-gray-800">
+              Swap Successful!
+            </h2>
+            <p className="text-gray-600 mb-6">
+              Your transaction was completed successfully.
+            </p>
+            <button
+              onClick={() => setIsSwapSuccessful(false)}
+              className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 };

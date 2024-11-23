@@ -17,11 +17,13 @@ const Navbar: React.FC = () => {
           <div className="flex items-center">
             <div className="text-white text-2xl font-bold">
               <div className="image-container">
-                <img
-                  src={safionLogo}
-                  alt="Logo"
-                  className="h-10 text-center responsive-logo"
-                />
+                <Link to="/">
+                  <img
+                    src={safionLogo}
+                    alt="Logo"
+                    className="h-10 text-center responsive-logo"
+                  />
+                </Link>
               </div>
             </div>
           </div>

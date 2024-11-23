@@ -28,36 +28,24 @@ struct RemoveLiquidityPayload {
 }
 
 struct TransferNotificationPayload {
-    op: Int as uint32;             // Operation code (e.g., swap, provide_lp)
+    op: Int as uint64;             // Operation code (e.g., swap, provide_lp)
     token_wallet: Address;         // Address of the other Router token wallet
-    refund_address: Address;       // Address for refund if operation fails
-    excesses_address: Address;     // Address for TON excesses
+    // refund_address: Address;       // Address for refund if operation fails
+    // excesses_address: Address;     // Address for TON excesses
     deadline: Int as uint64;       // Execution deadline for the transaction
     additional_data: Slice;        // Additional operation-specific data
 }
 
 struct ProvideLPPayload {
-    min_out: Int;                 // Minimum required tokens to receive
+    min_out: Int as uint64;                 // Minimum required tokens to receive
     receiver_address: Address;    // Address where tokens will be sent
-    fwd_gas: Int;                 // Forward gas
-    custom_payload: Cell?;        // Optional custom payload
-    refund_fwd_gas: Int;          // Gas for forwarding on refund
-    refund_payload: Cell?;        // Optional refund payload
-    ref_fee: Int as uint16;       // Referral fee
-    referral_address: Address;    // Referral address
     lower_price: Int as uint256;  // Lower price
     upper_price: Int as uint256;  // Upper price
 }
 
 struct SwapPayload {
-    min_out: Int;                 // Minimum required tokens to receive
+    min_out: Int as uint64;                 // Minimum required tokens to receive
     receiver_address: Address;    // Address where tokens will be sent
-    fwd_gas: Int;                 // Forward gas
-    custom_payload: Cell?;        // Optional custom payload
-    refund_fwd_gas: Int;          // Gas for forwarding on refund
-    refund_payload: Cell?;        // Optional refund payload
-    ref_fee: Int as uint16;       // Referral fee
-    referral_address: Address;    // Referral address
 }
 
 struct LiquidityInBins {
@@ -138,11 +126,11 @@ contract AMM with Deployable {
         // Validate the deadline
         require(payload.deadline > now(), "Deadline has passed");
 
-        if (payload.op == 0) {
+        if (payload.op == 0x25938561) {
             // Swap operation
             let swapData: SwapPayload = SwapPayload.fromSlice(payload.additional_data);
             self.swap(msg, payload, swapData);
-        } else if (payload.op == 1) {
+        } else if (payload.op == 0xfcf9e58f) {
             let provideLpData: ProvideLPPayload = ProvideLPPayload.fromSlice(payload.additional_data);
             // Provide LP operation
             self.provideLiquidity(msg, payload, provideLpData);
@@ -172,9 +160,8 @@ contract AMM with Deployable {
         let position: LiquidityPosition? = self.positions.get(sender());
         if position == null {
             // if not, create a new position
-            // token_wallet: Address;   // Address of the token wallet
-            // check if token_wallet is tokenX or tokenY
             let tokenWallet: Address = payload.token_wallet;
+            dump(tokenWallet);
             let isX: Bool = false;
 
             if tokenWallet == self.tokenX {

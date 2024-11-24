@@ -1,11 +1,11 @@
 import { toNano } from '@ton/core';
-import { SimpleCounter } from '../wrappers/SimpleCounter';
+import { LiquidityPool2 } from '../wrappers/LiquidityPool2';
 import { NetworkProvider } from '@ton/blueprint';
 
 export async function run(provider: NetworkProvider) {
-    const simpleCounter = provider.open(await SimpleCounter.fromInit(BigInt(Math.floor(Math.random() * 10000))));
+    const liquidityPool2 = provider.open(await LiquidityPool2.fromInit());
 
-    await simpleCounter.send(
+    await liquidityPool2.send(
         provider.sender(),
         {
             value: toNano('0.05'),
@@ -16,7 +16,7 @@ export async function run(provider: NetworkProvider) {
         }
     );
 
-    await provider.waitForDeploy(simpleCounter.address);
+    await provider.waitForDeploy(liquidityPool2.address);
 
-    console.log('ID', await simpleCounter.getId());
+    // run methods on `liquidityPool2`
 }

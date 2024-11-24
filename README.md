@@ -24,3 +24,5 @@ Price Stability: A dynamic algorithm maintains stable value without the need for
 Global Usability: Cross-border transactions are fast, secure, and frictionless.
 Transparency: Open and decentralized approach, ensuring trust among users.
 Safion is not just another stablecoin; it is a next-generation financial solution that offers both security and energy in the evolving world of DeFi.
+
+EQBmSTu-q_e6RnfR7f4lWzZJbcDOSf_yUqjK5LzXBf9CVqpA

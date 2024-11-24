@@ -98,8 +98,6 @@ contract AMM with Deployable {
     tokenYDecimals: Int as uint256;
     tokenXWalletCode: Cell;
     tokenYWalletCode: Cell;
-    // globalFeeXAccumulator: Int as uint256;
-    // globalFeeYAccumulator: Int as uint256;
 
     init() {
         self.currentPrice = 0;
@@ -107,11 +105,11 @@ contract AMM with Deployable {
         self.fee = 0;
         self.tokenXReserve = 0;
         self.tokenYReserve = 0;
-        self.tokenX = address("EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N");
-        self.tokenY = address("EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N");
+        self.tokenX = address("kQDe7JuTQ59XsGoCrBu-HuQ1OE8ffg1PbnHFAoH7Z5-KZg6B");
+        self.tokenY = address("kQADZNVtWb0op1EINU3ddZ_PpPHIuQ6mkEmXyzKZgxQIPpb6");
         self.owner = sender();
-        self.tokenXDecimals = 18;
-        self.tokenYDecimals = 18;
+        self.tokenXDecimals = 9;
+        self.tokenYDecimals = 9;
         self.tokenXWalletCode = emptyCell();
         self.tokenYWalletCode = emptyCell();
     }
@@ -574,5 +572,3 @@ contract AMM with Deployable {
         });
     }
 }
-
-// https://chatgpt.com/c/6717f1d7-58dc-8013-ba6e-ef33afb01441
